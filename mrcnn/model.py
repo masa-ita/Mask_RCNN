@@ -1801,7 +1801,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 [dataset_mrcnn_class_ids, dataset_mrcnn_bbox, dataset_mrcnn_mask])
 
     inputs = [x[:index] for x in inputs]
-    outputs = [y[:index] for y in outpus]
+    outputs = [y[:index] for y in outputs]
 
     return MRCNNSequence(inputs, outputs, batch_size)
 
