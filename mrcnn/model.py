@@ -25,6 +25,8 @@ import keras.models as KM
 
 from mrcnn import utils
 
+from mrcnn.sequence import MRCNNSequence
+
 # Requires TensorFlow 1.3+ and Keras 2.0.8+.
 from distutils.version import LooseVersion
 assert LooseVersion(tf.__version__) >= LooseVersion("1.3")
@@ -1219,44 +1221,44 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         mode=config.IMAGE_RESIZE_MODE)
     mask = utils.resize_mask(mask, scale, padding, crop)
 
-    # Random horizontal flips.
-    # TODO: will be removed in a future update in favor of augmentation
-    if augment:
-        logging.warning("'augment' is deprecated. Use 'augmentation' instead.")
-        if random.randint(0, 1):
-            image = np.fliplr(image)
-            mask = np.fliplr(mask)
+    # # Random horizontal flips.
+    # # TODO: will be removed in a future update in favor of augmentation
+    # if augment:
+    #     logging.warning("'augment' is deprecated. Use 'augmentation' instead.")
+    #     if random.randint(0, 1):
+    #         image = np.fliplr(image)
+    #         mask = np.fliplr(mask)
 
-    # Augmentation
-    # This requires the imgaug lib (https://github.com/aleju/imgaug)
-    if augmentation:
-        import imgaug
+    # # Augmentation
+    # # This requires the imgaug lib (https://github.com/aleju/imgaug)
+    # if augmentation:
+    #     import imgaug
 
-        # Augmenters that are safe to apply to masks
-        # Some, such as Affine, have settings that make them unsafe, so always
-        # test your augmentation on masks
-        MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
-                           "Fliplr", "Flipud", "CropAndPad",
-                           "Affine", "PiecewiseAffine"]
+    #     # Augmenters that are safe to apply to masks
+    #     # Some, such as Affine, have settings that make them unsafe, so always
+    #     # test your augmentation on masks
+    #     MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
+    #                        "Fliplr", "Flipud", "CropAndPad",
+    #                        "Affine", "PiecewiseAffine"]
 
-        def hook(images, augmenter, parents, default):
-            """Determines which augmenters to apply to masks."""
-            return augmenter.__class__.__name__ in MASK_AUGMENTERS
+    #     def hook(images, augmenter, parents, default):
+    #         """Determines which augmenters to apply to masks."""
+    #         return augmenter.__class__.__name__ in MASK_AUGMENTERS
 
-        # Store shapes before augmentation to compare
-        image_shape = image.shape
-        mask_shape = mask.shape
-        # Make augmenters deterministic to apply similarly to images and masks
-        det = augmentation.to_deterministic()
-        image = det.augment_image(image)
-        # Change mask to np.uint8 because imgaug doesn't support np.bool
-        mask = det.augment_image(mask.astype(np.uint8),
-                                 hooks=imgaug.HooksImages(activator=hook))
-        # Verify that shapes didn't change
-        assert image.shape == image_shape, "Augmentation shouldn't change image size"
-        assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
-        # Change mask back to bool
-        mask = mask.astype(np.bool)
+    #     # Store shapes before augmentation to compare
+    #     image_shape = image.shape
+    #     mask_shape = mask.shape
+    #     # Make augmenters deterministic to apply similarly to images and masks
+    #     det = augmentation.to_deterministic()
+    #     image = det.augment_image(image)
+    #     # Change mask to np.uint8 because imgaug doesn't support np.bool
+    #     mask = det.augment_image(mask.astype(np.uint8),
+    #                              hooks=imgaug.HooksImages(activator=hook))
+    #     # Verify that shapes didn't change
+    #     assert image.shape == image_shape, "Augmentation shouldn't change image size"
+    #     assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+    #     # Change mask back to bool
+    #     mask = mask.astype(np.bool)
 
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
@@ -1670,9 +1672,11 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
         is True then the outputs list contains target class_ids, bbox deltas,
         and masks.
     """
-    b = 0  # batch item index
+    index = 0
     image_index = -1
     image_ids = np.copy(dataset.image_ids)
+    dataset_size = len(image_ids)
+    annotated_items = 0
     error_count = 0
     no_augmentation_sources = no_augmentation_sources or []
 
@@ -1685,17 +1689,8 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                                              config.BACKBONE_STRIDES,
                                              config.RPN_ANCHOR_STRIDE)
 
-    # Keras requires a generator to run indefinitely.
-    while True:
+    for image_id in image_ids:
         try:
-            # Increment index to pick next image. Shuffle if at the start of an epoch.
-            image_index = (image_index + 1) % len(image_ids)
-            if shuffle and image_index == 0:
-                np.random.shuffle(image_ids)
-
-            # Get GT bounding boxes and masks for image.
-            image_id = image_ids[image_index]
-
             # If the image source is not to be augmented pass None as augmentation
             if dataset.image_info[image_id]['source'] in no_augmentation_sources:
                 image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
@@ -1726,36 +1721,35 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                     rois, mrcnn_class_ids, mrcnn_bbox, mrcnn_mask =\
                         build_detection_targets(
                             rpn_rois, gt_class_ids, gt_boxes, gt_masks, config)
-
-            # Init batch arrays
-            if b == 0:
-                batch_image_meta = np.zeros(
-                    (batch_size,) + image_meta.shape, dtype=image_meta.dtype)
-                batch_rpn_match = np.zeros(
-                    [batch_size, anchors.shape[0], 1], dtype=rpn_match.dtype)
-                batch_rpn_bbox = np.zeros(
-                    [batch_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
-                batch_images = np.zeros(
-                    (batch_size,) + image.shape, dtype=np.float32)
-                batch_gt_class_ids = np.zeros(
-                    (batch_size, config.MAX_GT_INSTANCES), dtype=np.int32)
-                batch_gt_boxes = np.zeros(
-                    (batch_size, config.MAX_GT_INSTANCES, 4), dtype=np.int32)
-                batch_gt_masks = np.zeros(
-                    (batch_size, gt_masks.shape[0], gt_masks.shape[1],
-                     config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
+            if index == 0:
+                # Init arrays
+                dataset_image_meta = np.zeros(
+                    (dataset_size,) + image_meta.shape, dtype=image_meta.dtype)
+                dataset_rpn_match = np.zeros(
+                    [dataset_size, anchors.shape[0], 1], dtype=rpn_match.dtype)
+                dataset_rpn_bbox = np.zeros(
+                    [dataset_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
+                dataset_images = np.zeros(
+                    (dataset_size,) + image.shape, dtype=np.float32)
+                dataset_gt_class_ids = np.zeros(
+                    (dataset_size, config.MAX_GT_INSTANCES), dtype=np.int32)
+                dataset_gt_boxes = np.zeros(
+                    (dataset_size, config.MAX_GT_INSTANCES, 4), dtype=np.int32)
+                dataset_gt_masks = np.zeros(
+                    (dataset_size, gt_masks.shape[0], gt_masks.shape[1],
+                        config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
                 if random_rois:
-                    batch_rpn_rois = np.zeros(
-                        (batch_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
+                    dataset_rpn_rois = np.zeros(
+                        (dataset_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
                     if detection_targets:
-                        batch_rois = np.zeros(
-                            (batch_size,) + rois.shape, dtype=rois.dtype)
-                        batch_mrcnn_class_ids = np.zeros(
-                            (batch_size,) + mrcnn_class_ids.shape, dtype=mrcnn_class_ids.dtype)
-                        batch_mrcnn_bbox = np.zeros(
-                            (batch_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
-                        batch_mrcnn_mask = np.zeros(
-                            (batch_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
+                        dataset_rois = np.zeros(
+                            (dataset_size,) + rois.shape, dtype=rois.dtype)
+                        dataset_mrcnn_class_ids = np.zeros(
+                            (dataset_size,) + mrcnn_class_ids.shape, dtype=mrcnn_class_ids.dtype)
+                        dataset_mrcnn_bbox = np.zeros(
+                            (dataset_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
+                        dataset_mrcnn_mask = np.zeros(
+                            (dataset_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
 
             # If more instances than fits in the array, sub-sample from them.
             if gt_boxes.shape[0] > config.MAX_GT_INSTANCES:
@@ -1766,42 +1760,22 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 gt_masks = gt_masks[:, :, ids]
 
             # Add to batch
-            batch_image_meta[b] = image_meta
-            batch_rpn_match[b] = rpn_match[:, np.newaxis]
-            batch_rpn_bbox[b] = rpn_bbox
-            batch_images[b] = mold_image(image.astype(np.float32), config)
-            batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
-            batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
-            batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
+            dataset_image_meta[index] = image_meta
+            dataset_rpn_match[index] = rpn_match[:, np.newaxis]
+            dataset_rpn_bbox[index] = rpn_bbox
+            dataset_images[index] = mold_image(image.astype(np.float32), config)
+            dataset_gt_class_ids[index, :gt_class_ids.shape[0]] = gt_class_ids
+            dataset_gt_boxes[index, :gt_boxes.shape[0]] = gt_boxes
+            dataset_gt_masks[index, :, :, :gt_masks.shape[-1]] = gt_masks
             if random_rois:
-                batch_rpn_rois[b] = rpn_rois
+                dataset_rpn_rois[index] = rpn_rois
                 if detection_targets:
-                    batch_rois[b] = rois
-                    batch_mrcnn_class_ids[b] = mrcnn_class_ids
-                    batch_mrcnn_bbox[b] = mrcnn_bbox
-                    batch_mrcnn_mask[b] = mrcnn_mask
-            b += 1
+                    dataset_rois[index] = rois
+                    dataset_mrcnn_class_ids[index] = mrcnn_class_ids
+                    dataset_mrcnn_bbox[index] = mrcnn_bbox
+                    dataset_mrcnn_mask[index] = mrcnn_mask
+            index += 1
 
-            # Batch full?
-            if b >= batch_size:
-                inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
-                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
-                outputs = []
-
-                if random_rois:
-                    inputs.extend([batch_rpn_rois])
-                    if detection_targets:
-                        inputs.extend([batch_rois])
-                        # Keras requires that output and targets have the same number of dimensions
-                        batch_mrcnn_class_ids = np.expand_dims(
-                            batch_mrcnn_class_ids, -1)
-                        outputs.extend(
-                            [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
-
-                yield inputs, outputs
-
-                # start a new batch
-                b = 0
         except (GeneratorExit, KeyboardInterrupt):
             raise
         except:
@@ -1811,6 +1785,23 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             error_count += 1
             if error_count > 5:
                 raise
+
+    inputs = [dataset_images, dataset_image_meta, dataset_rpn_match, dataset_rpn_bbox,
+                dataset_gt_class_ids, dataset_gt_boxes, dataset_gt_masks]
+    outputs = []
+
+    if random_rois:
+        inputs.extend([dataset_rpn_rois])
+        if detection_targets:
+            inputs.extend([dataset_rois])
+            # Keras requires that output and targets have the same number of dimensions
+            dataset_mrcnn_class_ids = np.expand_dims(
+                dataset_mrcnn_class_ids, -1)
+            outputs.extend(
+                [dataset_mrcnn_class_ids, dataset_mrcnn_bbox, dataset_mrcnn_mask])
+
+    return MRCNNSequence(inputs, outputs, batch_size)
+
 
 
 ############################################################
