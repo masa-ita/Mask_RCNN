@@ -1800,8 +1800,8 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             outputs.extend(
                 [dataset_mrcnn_class_ids, dataset_mrcnn_bbox, dataset_mrcnn_mask])
 
-    inputs = [x[:index] for x in inputs]
-    outputs = [y[:index] for y in outputs]
+    inputs = [x[:index].copy() for x in inputs]
+    outputs = [y[:index].copy() for y in outputs]
 
     return MRCNNSequence(inputs, outputs, batch_size)
 
